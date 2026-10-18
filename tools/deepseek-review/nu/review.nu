@@ -113,7 +113,7 @@ def is-pr-locked [
   ]
 
   try {
-    let response = http get --max-time 60sec -H $headers $url
+    let response = http get --max-time $SHERLOCK.GH_TIMEOUT -H $headers $url
     ($response | get -o locked | default false)
   } catch {
     false
@@ -262,8 +262,15 @@ export def --env deepseek-review [
   print $'finish_reason: ($finish_reason), reasoning: ($reason | str length -g) chars, content: ($review | str length -g) chars'
   # Reasoning is never posted to the PR (size, and it quotes the diff). It is logged only when
   # SHERLOCK_LOG_REASONING=true (the reusable workflow sets it; the public poller does not).
+  # Reasoning can quote the (PR-controlled) diff verbatim, so workflow-command processing is
+  # suspended around it with a random token: a quoted `::error::` line stays plain text.
   if ($env.SHERLOCK_LOG_REASONING? == 'true') and ($reason | is-not-empty) {
-    print '::group::Reasoning (not posted)'; print $reason; print '::endgroup::'
+    let stop = (random uuid)
+    print '::group::Reasoning (not posted)'
+    print $'::stop-commands::($stop)'
+    print $reason
+    print $'::($stop)::'
+    print '::endgroup::'
   }
   let review = if ($review | is-empty) and ($finish_reason == 'length') {
     $'_The reviewer exhausted its output budget before writing the review (char lp)finish_reason=length(char rp). Re-run with `@deepseek review` or split the PR._'
@@ -395,23 +402,34 @@ def parse-line [] {
   }
 }
 
-# Coalesce the reasoning content
 # Sherlock patch P3: append the signature line; P4: keep the body under GitHub's review limit
-# (65,536 chars) with a grapheme-safe cut so the signature always lands and the POST never 422s.
+# (65,536 characters, counted by GitHub as code points). The size is measured in code points and
+# the cut is made on grapheme boundaries, so the signature always lands and the POST never 422s.
 def sherlock-sign [review: string, model: string] {
   let label = $SHERLOCK.MODEL_LABELS | get -o $model | default $model
-  let sha = $env.SHERLOCK_SOURCE_SHA? | default 'unknown' | str substring 0..6
-  let link = ['[ci-workflows@' $sha '](https://github.com/ModernNomad-98/ci-workflows/commit/' $sha ')'] | str join
-  let sig = $'🕵️ ($SHERLOCK.NAME) · model `($model)` (char lp)($label)(char rp) · thinking: ($SHERLOCK.REASONING_EFFORT) · advisory only, not a merge gate · ($link)'
-  let budget = $SHERLOCK.BODY_LIMIT - ($sig | str length -g) - 80
-  let body = if ($review | str length -g) > $budget {
-    let keep = $review | str substring -g 0..<$budget
+  let full_sha = $env.SHERLOCK_SOURCE_SHA? | default ''
+  let source = if ($full_sha =~ '^[0-9a-f]{7,40}$') {
+    let sha = $full_sha | str substring 0..6
+    ['[ci-workflows@' $sha '](https://github.com/ModernNomad-98/ci-workflows/commit/' $full_sha ')'] | str join
+  } else { 'ci-workflows (local run)' }
+  let sig = $'🕵️ ($SHERLOCK.NAME) · model `($model)` (char lp)($label)(char rp) · thinking: ($SHERLOCK.REASONING_EFFORT) · advisory only, not a merge gate · ($source)'
+  let budget = $SHERLOCK.BODY_LIMIT - ($sig | str length -c) - 80
+  let body = if ($review | str length -c) > $budget {
+    # Start from `budget` graphemes; each grapheme is >= 1 code point, so dropping `excess`
+    # graphemes removes at least `excess` code points and the loop ends in a few steps.
+    mut n = $budget
+    mut keep = $review | str substring -g 0..<$n
+    while ($keep | str length -c) > $budget {
+      $n = $n - (($keep | str length -c) - $budget)
+      $keep = $review | str substring -g 0..<$n
+    }
     let omitted = ($review | str length -g) - ($keep | str length -g)
-    [$keep '' $'… [truncated: ($omitted) chars omitted]'] | str join (char nl)
+    [$keep '' $'… [truncated: ($omitted) characters omitted]'] | str join (char nl)
   } else { $review }
   [$body '' '---' $sig] | str join (char nl)
 }
 
+# Coalesce the reasoning content
 def coalesce-reasoning [] {
   let msg = $in
   $msg.reasoning_content? | default $msg.reasoning?

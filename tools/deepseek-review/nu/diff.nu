@@ -4,6 +4,9 @@
 # Description: Diff command for DeepSeek-Review
 
 use common.nu [GITHUB_API_BASE, ECODE, git-check, has-ref]
+# Sherlock patch P5: GitHub API call timeout (same value as SHERLOCK.GH_TIMEOUT in review.nu).
+const GH_TIMEOUT = 60sec
+
 use util.nu [generate-include-regex, generate-exclude-regex, prepare-awk, is-safe-git]
 
 # If the PR title or body contains any of these keywords, skip the review
@@ -71,7 +74,7 @@ def get-pr-diff [
     exit $ECODE.INVALID_PARAMETER
   }
 
-  let description = http get --max-time 60sec -H $BASE_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)'
+  let description = http get --max-time $GH_TIMEOUT -H $BASE_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)'
                     | select title body | values | str join "\n"
 
   # Check if the PR title or body contains keywords to skip the review
@@ -80,7 +83,7 @@ def get-pr-diff [
     exit $ECODE.SUCCESS
   }
 
-  let commit_msg = http get --max-time 60sec -H $BASE_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)/commits'
+  let commit_msg = http get --max-time $GH_TIMEOUT -H $BASE_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)/commits'
                    | last | get commit.message
   if ($IGNORE_REVIEW_KEYWORDS | any {|it| $commit_msg =~ $it }) {
     print $'(ansi r)The latest PR commit message contains keywords to skip the review, bye...(ansi reset)'
@@ -88,7 +91,7 @@ def get-pr-diff [
   }
 
   # Get the diff content of the PR
-  http get --max-time 60sec -H $DIFF_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)' | str trim
+  http get --max-time $GH_TIMEOUT -H $DIFF_HEADER $'($GITHUB_API_BASE)/repos/($repo)/pulls/($pr_number)' | str trim
 }
 
 # Get diff content from local git changes
@@ -135,8 +138,12 @@ def get-patch-diff [
 # `complete`, which drains stdout/stderr fully; a non-zero exit code is the outdated-awk path.
 def run-awk-filter [awk_bin: string, program: string, content: string, outdated_msg: string] {
   let tmp = (mktemp -t sherlock-diff.XXXXXX)
-  $content | save -f $tmp
-  let result = do { ^$awk_bin $program $tmp } | complete
+  let result = try {
+    $content | save -f $tmp
+    do { ^$awk_bin $program $tmp } | complete
+  } catch {|err|
+    { exit_code: 127, stdout: '', stderr: $err.msg }
+  }
   rm -f $tmp
   if $result.exit_code != 0 {
     print $outdated_msg
