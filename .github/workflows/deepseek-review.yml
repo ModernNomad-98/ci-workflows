@@ -1,0 +1,76 @@
+# DeepSeek PR review — reusable workflow (the review logic lives here).
+#
+# Callers are small per-repository workflows named "DeepSeek Code Review":
+#   jobs:
+#     review:
+#       uses: ModernNomad-98/ci-workflows/.github/workflows/deepseek-review.yml@main
+#       secrets:
+#         CHAT_TOKEN: ${{ secrets.CHAT_TOKEN }}
+# Template: caller-template.yml in this repository.
+#
+# KILL SWITCHES (see README.md for the full table)
+#   All repos, mention-only : set `auto` default below to false and commit to main
+#   All repos, fully off    : set `enabled` default below to false and commit to main
+#   One repo, immediate     : gh workflow disable "DeepSeek Code Review" -R OWNER/REPO
+#   One repo, no-code       : gh variable set DEEPSEEK_REVIEW_ENABLED --body false -R OWNER/REPO
+#   One repo, permanent     : delete the caller workflow in that repo
+#
+# Action pinned by commit SHA for supply-chain safety:
+#   hustcer/deepseek-review v1.21 = eccde2e9781008d795e366b951e313e37af88dd5
+name: DeepSeek PR Review (reusable)
+
+on:
+  workflow_call:
+    inputs:
+      model:
+        description: DeepSeek model used for the review
+        type: string
+        required: false
+        default: deepseek-v4-flash
+      watch-mention:
+        description: Comment string that re-triggers a review (caller needs the issue_comment event)
+        type: string
+        required: false
+        default: '@deepseek'
+      exclude-patterns:
+        description: Comma-separated file patterns excluded from the diff
+        type: string
+        required: false
+        default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**'
+      # --- central switches: flip a default to hold or soften EVERY caller at once ---
+      enabled:
+        description: Set false to hold all DeepSeek reviews (one central edit)
+        type: boolean
+        required: false
+        default: true
+      auto:
+        description: Set false to review only on @mention (one central edit)
+        type: boolean
+        required: false
+        default: true
+    secrets:
+      CHAT_TOKEN:
+        description: DeepSeek API key (per-repository secret named CHAT_TOKEN)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: DeepSeek review
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    if: ${{ inputs.enabled && (inputs.auto || github.event_name == 'issue_comment') }}
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: DeepSeek code review
+        uses: hustcer/deepseek-review@eccde2e9781008d795e366b951e313e37af88dd5
+        with:
+          chat-token: ${{ secrets.CHAT_TOKEN }}
+          model: ${{ inputs.model }}
+          watch-mention: ${{ inputs.watch-mention }}
+          exclude-patterns: ${{ inputs.exclude-patterns }}
