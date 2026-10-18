@@ -5,8 +5,15 @@ Shared GitHub Actions workflows for the `ModernNomad-98` repositories.
 ## DeepSeek PR review
 
 Reusable workflow `.github/workflows/deepseek-review.yml` posts a Codex-style AI review on
-pull requests using [hustcer/deepseek-review](https://github.com/hustcer/deepseek-review)
-(MIT, pinned to the v1.21 commit `eccde2e`) and the DeepSeek API.
+pull requests — **DeepSeek_Sherlock** — using the DeepSeek API (`deepseek-flash`, i.e.
+DeepSeek-V4.1-Flash, thinking at max effort). The review tool is a vendored, patched copy of
+[hustcer/deepseek-review](https://github.com/hustcer/deepseek-review) v1.21 (MIT) in
+[`tools/deepseek-review/`](./tools/deepseek-review/) — every change from upstream is listed in
+[`PATCHES.md`](./tools/deepseek-review/PATCHES.md).
+
+Every review ends with a signature line, so a reader always knows what wrote it:
+
+> 🕵️ DeepSeek_Sherlock · model `deepseek-flash` (DeepSeek-V4.1-Flash) · thinking: max · advisory only, not a merge gate · ci-workflows@<sha7>
 
 Each repository carries a small caller workflow named **DeepSeek Code Review** that pins this
 workflow by full commit SHA — see [`caller-template.yml`](./caller-template.yml). Current callers:
@@ -81,9 +88,15 @@ pwsh ./review.ps1 -Action enable
   comments reach the reusable workflow.
 - Posts a formal PR review; `skip review` / `skip cr` in the PR title or body skips a run;
   locked conversations are skipped.
-- No checkout, no PR code execution: the diff is read through the GitHub API.
+- No checkout of PR code, no PR code execution: the diff is read through the GitHub API. The only
+  checkout is this repository's `tools/deepseek-review/` at the pinned tool SHA.
 - Advisory only — not a required check and does not gate merges.
-- Defaults: `deepseek-v4-flash`, lockfiles/generated output/vendor excluded.
+- Defaults: model `deepseek-flash`, `thinking: enabled`, `reasoning_effort: max`; lockfiles,
+  generated output and vendor files excluded.
+- The model's reasoning is never posted to the PR. In the reusable workflow it is written to the
+  job log (caller repo, same visibility as the PR); the poller does not log it (this repo is public).
+- Very long reviews are cut at 65,000 characters with a `[truncated]` marker; the signature always
+  stays. A stalled DeepSeek call fails after 600 s; API errors are printed in the job log.
 
 ### Reviewing a repository that cannot carry a caller — the poller
 
@@ -97,7 +110,7 @@ reviews their PRs from the outside:
 - For each open, non-draft, unlocked PR: reviews a head SHA once (**auto**), or again when a
   non-bot OWNER / MEMBER / COLLABORATOR comment containing `@deepseek` is newer than the last
   review (**mention**). State is derived from GitHub reviews — nothing is stored.
-- Calls the same pinned `hustcer/deepseek-review` code (v1.21) through its Nushell entry point;
+- Runs the same vendored tool (`tools/deepseek-review/`, from the same commit as the poller);
   the target repository has no workflow file and never holds a key.
 
 Secrets in this repository: `CHAT_TOKEN` (DeepSeek key) and `REVIEW_POLL_TOKEN` — a fine-grained
@@ -113,15 +126,22 @@ Dry run of the decision logic without posting: put a stub `nu` on `PATH` that ec
 environment and run `scripts/poll-review.sh` with `GH_TOKEN`, `CHAT_TOKEN`, `REVIEWER_LOGIN`,
 `REVIEW_TOOL_DIR`, `CONFIG_FILE` (and optionally `ONLY_REPO` / `ONLY_PR`).
 
-### Known issue: large diffs (why `exclude-patterns` is empty)
+### Fixed: reviews of large diffs used to hang
 
-With any include/exclude pattern set, `hustcer/deepseek-review` v1.21 pipes the diff through
-`awk` inside a Nushell `try` block. Nushell writes the external's stdin before reading its stdout,
-so once awk has echoed more than the pipe buffer (~64 KB) both sides block: the job hangs until
-its timeout and no review is posted. Reproduced locally with Nushell 0.114.1 (what v1.21 pins)
-and 0.116.1 (current upstream); seen live on Project-Aegis #844–#847 and waypoint-pm #120.
-Empty patterns skip the awk step, so lockfiles are currently reviewed too. Follow-up: patch the
-tool's `apply-file-filters` to run awk on a temp file instead of a pipe, re-pin, and upstream it.
+Upstream v1.21 filters the diff with `$content | try { ^awk … }`; Nushell 0.114–0.116 deadlock on
+that once awk's output passes ~64 KB, so reviews of large PRs hung until the job timeout
+(Project-Aegis #844–#847, waypoint-pm #120). Patch P1 in `PATCHES.md` runs awk on a temp file and
+reads it with `complete`; the exclusions were then turned back on.
+
+### Releasing a tool change
+
+GitHub exposes no context for a reusable workflow's own commit, so the tool is pinned by literal
+SHA, exactly like an external action — which takes two commits:
+
+1. Change `tools/deepseek-review/` (and `PATCHES.md`), commit and push. Note the SHA.
+2. Set `SHERLOCK_TOOL_SHA` in `.github/workflows/deepseek-review.yml` to that SHA, commit and push.
+3. Re-pin each caller's `uses:` to the commit from step 2 (the poller needs nothing — it runs
+   from `main`).
 
 ### Bumping the reusable workflow
 
@@ -132,9 +152,9 @@ tool's `apply-file-filters` to run awk on a temp file instead of a pipe, re-pin,
 
 ### Security
 
-- The review action and the lookalike callers are pinned to full commit SHAs; bump deliberately
-  after reviewing the upstream diff.
-- `CHAT_TOKEN` is a DeepSeek API key with no GitHub access; it is passed only to the pinned
-  action and masked in logs.
+- Every external action and the vendored tool are pinned to full commit SHAs; update the tool
+  deliberately after reviewing the upstream diff (`PATCHES.md`, "Updating from upstream").
+- `CHAT_TOKEN` is a DeepSeek API key with no GitHub access; it is passed only to the review step
+  and masked in logs. The tool never prints request headers.
 - `pull_request_target` grants the caller a write-scoped `GITHUB_TOKEN`; the reusable workflow
   only reads the PR and posts a review.

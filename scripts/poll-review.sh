@@ -19,7 +19,8 @@
 #   GH_TOKEN        token with pull-requests:write + contents:read on every polled repo
 #   CHAT_TOKEN      DeepSeek API key
 #   REVIEWER_LOGIN  the login that GH_TOKEN authenticates as (used for de-duplication)
-#   REVIEW_TOOL_DIR checkout of hustcer/deepseek-review at the pinned commit
+#   REVIEW_TOOL_DIR tools/deepseek-review in this repository (vendored, patched tool)
+#   SHERLOCK_SOURCE_SHA commit the tool runs from (shown in each review's signature line)
 #   CONFIG_FILE     path to review-config.json
 # Optional:
 #   ONLY_REPO / ONLY_PR  restrict to one repo / one PR (workflow_dispatch)
@@ -36,10 +37,10 @@ enabled="$(jq -r 'if .enabled == false then "false" else "true" end' <<<"$cfg")"
 auto="$(jq -r 'if .auto == false then "false" else "true" end' <<<"$cfg")"
 mention="$(jq -r '.poll.mention // "@deepseek"' <<<"$cfg")"
 max_per_run="$(jq -r '.poll["max-per-run"] // 5' <<<"$cfg")"
-model="$(jq -r '.poll.model // "deepseek-v4-flash"' <<<"$cfg")"
-# Empty by default on purpose: a non-empty exclude list sends the diff through awk inside a
-# Nushell `try` block, which deadlocks on diffs over ~64 KB (see deepseek-review.yml).
-exclude="$(jq -r '.poll["exclude-patterns"] // ""' <<<"$cfg")"
+model="$(jq -r '.poll.model // "deepseek-flash"' <<<"$cfg")"
+# The awk filter deadlock on large diffs is fixed in the vendored tool (PATCHES.md, P1), so the
+# lockfile/generated exclusions are back on.
+exclude="$(jq -r '.poll["exclude-patterns"] // "pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**"' <<<"$cfg")"
 mapfile -t repos < <(jq -r '.poll.repos // [] | .[]' <<<"$cfg")
 
 echo "central config: enabled=$enabled auto=$auto mention='$mention' max-per-run=$max_per_run repos=${#repos[@]}"
@@ -53,8 +54,9 @@ review_pr() {
   echo "::group::review $repo#$pr ($reason)"
   (
     cd "$REVIEW_TOOL_DIR"
-    # Mirrors the action.yaml invocation at the pinned commit; GITHUB_ACTIONS=true makes the
-    # tool post a COMMENT review to the PR instead of printing to stdout.
+    # The vendored tool (tools/deepseek-review, this commit). GITHUB_ACTIONS=true makes it post a
+    # COMMENT review ending in the DeepSeek_Sherlock signature. Reasoning is NOT logged here:
+    # this repository is public, so its job logs are too (SHERLOCK_LOG_REASONING stays unset).
     REPO_INPUT="$repo" PR_NUMBER_INPUT="$pr" MODEL_INPUT="$model" EXCLUDE_INPUT="$exclude" \
     nu -I "$REVIEW_TOOL_DIR/nu" -c '
       use review.nu *

@@ -8,6 +8,6 @@
     ],
     "mention": "@deepseek",
     "max-per-run": 5,
-    "model": "deepseek-v4-flash"
+    "model": "deepseek-flash"
   }
 }

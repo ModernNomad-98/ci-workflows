@@ -14,8 +14,9 @@
 #                       Contents: Read, Metadata: Read. Reviews post as this token's user.
 #
 # Pins (supply chain): every `uses:` is a full commit SHA with its tag in a comment.
-#   hustcer/deepseek-review v1.21 = eccde2e9781008d795e366b951e313e37af88dd5
-#   hustcer/setup-nu       v3.25 = ccd5bb5426b05a32009c2ba967946231f3919c97 (what v1.21 itself uses)
+#   review tool            vendored in tools/deepseek-review/ (hustcer/deepseek-review v1.21 + PATCHES.md),
+#                          run from this same commit — no second checkout
+#   hustcer/setup-nu       v3.25 = ccd5bb5426b05a32009c2ba967946231f3919c97 (Nushell 0.114.1)
 #   actions/checkout       v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1
 name: DeepSeek Poll Review
 
@@ -50,17 +51,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Check out ci-workflows (config + poller script)
+      - name: Check out ci-workflows (config, poller, vendored review tool)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-
-      - name: Check out hustcer/deepseek-review at the pinned commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: hustcer/deepseek-review
-          ref: eccde2e9781008d795e366b951e313e37af88dd5 # v1.21
-          path: .deepseek-review
           persist-credentials: false
 
       - name: Set up Nushell
@@ -83,7 +76,8 @@ jobs:
           GH_TOKEN: ${{ secrets.REVIEW_POLL_TOKEN }}
           CHAT_TOKEN: ${{ secrets.CHAT_TOKEN }}
           REVIEWER_LOGIN: ${{ steps.whoami.outputs.login }}
-          REVIEW_TOOL_DIR: ${{ github.workspace }}/.deepseek-review
+          REVIEW_TOOL_DIR: ${{ github.workspace }}/tools/deepseek-review
+          SHERLOCK_SOURCE_SHA: ${{ github.sha }}
           CONFIG_FILE: ${{ github.workspace }}/review-config.json
           ONLY_REPO: ${{ inputs.repo }}
           ONLY_PR: ${{ inputs.pr }}
