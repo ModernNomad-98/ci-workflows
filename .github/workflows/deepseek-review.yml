@@ -1,19 +1,22 @@
 # DeepSeek PR review — reusable workflow (the review logic lives here).
 #
-# Callers are small per-repository workflows named "DeepSeek Code Review":
+# Callers are small per-repository workflows named "DeepSeek Code Review" that must pin this
+# file by full commit SHA (with a legible trailing version comment):
 #   jobs:
 #     review:
-#       uses: ModernNomad-98/ci-workflows/.github/workflows/deepseek-review.yml@main
+#       uses: ModernNomad-98/ci-workflows/.github/workflows/deepseek-review.yml@<40-hex SHA> # vX.Y.Z
 #       secrets:
 #         CHAT_TOKEN: ${{ secrets.CHAT_TOKEN }}
 # Template: caller-template.yml in this repository.
 #
-# KILL SWITCHES (see README.md for the full table)
-#   All repos, mention-only : set `auto` default below to false and commit to main
-#   All repos, fully off    : set `enabled` default below to false and commit to main
-#   One repo, immediate     : gh workflow disable "DeepSeek Code Review" -R OWNER/REPO
-#   One repo, no-code       : gh variable set DEEPSEEK_REVIEW_ENABLED --body false -R OWNER/REPO
-#   One repo, permanent     : delete the caller workflow in that repo
+# CENTRAL SWITCHES live in review-config.json (read at run time by the gate job), so they work
+# even for callers that pin this workflow by SHA:
+#   {"enabled": false}  -> hold every review in every caller
+#   {"auto": false}     -> mention-only everywhere (automatic PR reviews stop, @mention still works)
+# A config fetch failure holds reviews (fail closed).
+#
+# PER-REPO SWITCHES live in the caller: disable the "DeepSeek Code Review" workflow in that repo,
+# or set the DEEPSEEK_REVIEW_ENABLED repository variable to false.
 #
 # Action pinned by commit SHA for supply-chain safety:
 #   hustcer/deepseek-review v1.21 = eccde2e9781008d795e366b951e313e37af88dd5
@@ -37,17 +40,6 @@ on:
         type: string
         required: false
         default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**'
-      # --- central switches: flip a default to hold or soften EVERY caller at once ---
-      enabled:
-        description: Set false to hold all DeepSeek reviews (one central edit)
-        type: boolean
-        required: false
-        default: true
-      auto:
-        description: Set false to review only on @mention (one central edit)
-        type: boolean
-        required: false
-        default: true
     secrets:
       CHAT_TOKEN:
         description: DeepSeek API key (per-repository secret named CHAT_TOKEN)
@@ -58,11 +50,37 @@ permissions:
   pull-requests: write
 
 jobs:
+  gate:
+    name: Read review switches
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      enabled: ${{ steps.config.outputs.enabled }}
+      auto: ${{ steps.config.outputs.auto }}
+    steps:
+      - name: Read central review-config.json
+        id: config
+        shell: bash
+        run: |
+          url="https://raw.githubusercontent.com/ModernNomad-98/ci-workflows/main/review-config.json"
+          if cfg="$(curl -fsSL --max-time 20 "$url")" && printf '%s' "$cfg" | jq -e . >/dev/null 2>&1; then
+            enabled="$(printf '%s' "$cfg" | jq -r 'if .enabled == false then "false" else "true" end')"
+            auto="$(printf '%s' "$cfg" | jq -r 'if .auto == false then "false" else "true" end')"
+            echo "central config: enabled=$enabled auto=$auto"
+          else
+            echo "central config unavailable — holding reviews (fail closed)"
+            enabled="false"
+            auto="true"
+          fi
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "auto=$auto" >> "$GITHUB_OUTPUT"
+
   review:
     name: DeepSeek review
+    needs: gate
     runs-on: ubuntu-latest
     timeout-minutes: 18
-    if: ${{ inputs.enabled && (inputs.auto || github.event_name == 'issue_comment') }}
+    if: ${{ needs.gate.outputs.enabled == 'true' && (needs.gate.outputs.auto == 'true' || github.event_name == 'issue_comment') }}
     permissions:
       contents: read
       pull-requests: write

@@ -1,0 +1,5 @@
+{
+  "_comment": "Central switches for the DeepSeek PR review. enabled=false holds every caller; auto=false makes reviews mention-only. Flip a value and commit to main; callers that pin the reusable workflow by SHA still respect this file. A failed fetch holds reviews (fail closed).",
+  "enabled": true,
+  "auto": true
+}
