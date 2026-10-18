@@ -74,6 +74,15 @@ review_pr() {
 
 for repo in "${repos[@]}"; do
   echo "== $repo =="
+  # A fine-grained PAT answers 404 (not 403) for a repository outside its scope.
+  if ! perms="$(api "repos/$repo" --jq '.permissions // {}' 2>/dev/null)"; then
+    echo "::error::$repo is not visible to REVIEW_POLL_TOKEN (HTTP 404). Edit the token: Repository access -> Only select repositories -> add $repo; Pull requests = Read and write, Contents = Read."
+    exit 1
+  fi
+  if [[ "$(jq -r '.push // false' <<<"$perms")" != "true" ]]; then
+    echo "::error::REVIEW_POLL_TOKEN can read $repo but cannot write pull requests (permissions: $perms). Set Pull requests = Read and write on the token."
+    exit 1
+  fi
   if [[ -n "${ONLY_PR:-}" ]]; then
     prs="$(api "repos/$repo/pulls/$ONLY_PR" | jq -c '[.]')"
   else
