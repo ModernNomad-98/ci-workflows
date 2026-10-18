@@ -1,0 +1,91 @@
+# DeepSeek PR review — external poller.
+#
+# Reviews open PRs in the repositories listed under `poll.repos` in review-config.json by
+# calling the GitHub API from THIS repository with a scoped token. The target repository
+# needs no workflow file and never holds the DeepSeek key. Built for repositories whose
+# PR-workflow safety audit forbids secrets / issue_comment / reusable jobs in PR workflows
+# (opsflow: scripts/audit-pr-workflow-safety.mjs).
+#
+# Central switches apply: {"enabled": false} holds it, {"auto": false} makes it mention-only.
+#
+# Secrets (this repository):
+#   CHAT_TOKEN          DeepSeek API key
+#   REVIEW_POLL_TOKEN   fine-grained PAT: for each polled repo -> Pull requests: Read and write,
+#                       Contents: Read, Metadata: Read. Reviews post as this token's user.
+#
+# Pins (supply chain): every `uses:` is a full commit SHA with its tag in a comment.
+#   hustcer/deepseek-review v1.21 = eccde2e9781008d795e366b951e313e37af88dd5
+#   hustcer/setup-nu       v3.25 = ccd5bb5426b05a32009c2ba967946231f3919c97 (what v1.21 itself uses)
+#   actions/checkout       v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1
+name: DeepSeek Poll Review
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: 'Only this repository (owner/name); blank = every poll.repos entry'
+        required: false
+        default: ''
+      pr:
+        description: 'Only this PR number (requires repo)'
+        required: false
+        default: ''
+      force:
+        description: 'Review even if the current head already has a review'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deepseek-poll-review
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    name: Poll and review
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out ci-workflows (config + poller script)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out hustcer/deepseek-review at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hustcer/deepseek-review
+          ref: eccde2e9781008d795e366b951e313e37af88dd5 # v1.21
+          path: .deepseek-review
+          persist-credentials: false
+
+      - name: Set up Nushell
+        uses: hustcer/setup-nu@ccd5bb5426b05a32009c2ba967946231f3919c97 # v3.25
+        with:
+          version: 0.114.1
+
+      - name: Resolve reviewer identity
+        id: whoami
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_POLL_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then echo "::error::REVIEW_POLL_TOKEN secret is not set"; exit 1; fi
+          login="$(gh api user --jq .login)"
+          echo "login=$login" >> "$GITHUB_OUTPUT"
+          echo "reviews will post as: $login"
+
+      - name: Poll and review
+        env:
+          GH_TOKEN: ${{ secrets.REVIEW_POLL_TOKEN }}
+          CHAT_TOKEN: ${{ secrets.CHAT_TOKEN }}
+          REVIEWER_LOGIN: ${{ steps.whoami.outputs.login }}
+          REVIEW_TOOL_DIR: ${{ github.workspace }}/.deepseek-review
+          CONFIG_FILE: ${{ github.workspace }}/review-config.json
+          ONLY_REPO: ${{ inputs.repo }}
+          ONLY_PR: ${{ inputs.pr }}
+          FORCE: ${{ inputs.force }}
+        run: bash scripts/poll-review.sh

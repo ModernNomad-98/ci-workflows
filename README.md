@@ -85,6 +85,34 @@ pwsh ./review.ps1 -Action enable
 - Advisory only — not a required check and does not gate merges.
 - Defaults: `deepseek-v4-flash`, lockfiles/generated output/vendor excluded.
 
+### Reviewing a repository that cannot carry a caller — the poller
+
+Some repositories forbid what the caller needs. opsflow's `scripts/audit-pr-workflow-safety.mjs`
+rejects any PR-capable workflow that references a secret, listens to `issue_comment`, or uses a
+reusable-workflow job — by design. For those, `deepseek-poll-review.yml` in **this** repository
+reviews their PRs from the outside:
+
+- Runs every 10 minutes (and on `workflow_dispatch`, optionally for one repo / one PR / forced).
+- Reads `poll.repos` from `review-config.json`; the central `enabled` / `auto` switches apply.
+- For each open, non-draft, unlocked PR: reviews a head SHA once (**auto**), or again when a
+  non-bot OWNER / MEMBER / COLLABORATOR comment containing `@deepseek` is newer than the last
+  review (**mention**). State is derived from GitHub reviews — nothing is stored.
+- Calls the same pinned `hustcer/deepseek-review` code (v1.21) through its Nushell entry point;
+  the target repository has no workflow file and never holds a key.
+
+Secrets in this repository: `CHAT_TOKEN` (DeepSeek key) and `REVIEW_POLL_TOKEN` — a fine-grained
+PAT with, for each polled repo, **Pull requests: Read and write**, **Contents: Read**,
+**Metadata: Read**. Reviews post as that token's user; a dedicated machine user keeps them
+distinguishable from the owner's own reviews.
+
+Trade-offs: `@deepseek` mentions are answered on the next poll, not instantly; the PAT is one
+more credential to rotate; GitHub pauses scheduled workflows in a repository with no commits for
+60 days (any commit here — e.g. a switch flip — resets that).
+
+Dry run of the decision logic without posting: put a stub `nu` on `PATH` that echoes its
+environment and run `scripts/poll-review.sh` with `GH_TOKEN`, `CHAT_TOKEN`, `REVIEWER_LOGIN`,
+`REVIEW_TOOL_DIR`, `CONFIG_FILE` (and optionally `ONLY_REPO` / `ONLY_PR`).
+
 ### Bumping the reusable workflow
 
 1. Edit `.github/workflows/deepseek-review.yml` and merge to `main`.
