@@ -113,6 +113,16 @@ Dry run of the decision logic without posting: put a stub `nu` on `PATH` that ec
 environment and run `scripts/poll-review.sh` with `GH_TOKEN`, `CHAT_TOKEN`, `REVIEWER_LOGIN`,
 `REVIEW_TOOL_DIR`, `CONFIG_FILE` (and optionally `ONLY_REPO` / `ONLY_PR`).
 
+### Known issue: large diffs (why `exclude-patterns` is empty)
+
+With any include/exclude pattern set, `hustcer/deepseek-review` v1.21 pipes the diff through
+`awk` inside a Nushell `try` block. Nushell writes the external's stdin before reading its stdout,
+so once awk has echoed more than the pipe buffer (~64 KB) both sides block: the job hangs until
+its timeout and no review is posted. Reproduced locally with Nushell 0.114.1 (what v1.21 pins)
+and 0.116.1 (current upstream); seen live on Project-Aegis #844–#847 and waypoint-pm #120.
+Empty patterns skip the awk step, so lockfiles are currently reviewed too. Follow-up: patch the
+tool's `apply-file-filters` to run awk on a temp file instead of a pipe, re-pin, and upstream it.
+
 ### Bumping the reusable workflow
 
 1. Edit `.github/workflows/deepseek-review.yml` and merge to `main`.

@@ -36,10 +36,16 @@ on:
         required: false
         default: '@deepseek'
       exclude-patterns:
-        description: Comma-separated file patterns excluded from the diff
+        # EMPTY ON PURPOSE. Any non-empty include/exclude pattern makes the review tool pipe the
+        # whole diff through awk inside a Nushell `try` block, which deadlocks once the diff
+        # exceeds the ~64 KB pipe buffer (reproduced with Nushell 0.114.1 and 0.116.1). The job
+        # then hangs until its timeout and no review is posted (Project-Aegis #844-#847,
+        # waypoint-pm #120). Empty patterns skip the awk filter entirely. Lockfile exclusion
+        # returns once the tool is patched (see README, "Known issue: large diffs").
+        description: Comma-separated file patterns excluded from the diff (leave empty — see comment)
         type: string
         required: false
-        default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**'
+        default: ''
     secrets:
       CHAT_TOKEN:
         description: DeepSeek API key (per-repository secret named CHAT_TOKEN)

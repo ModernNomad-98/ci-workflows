@@ -37,7 +37,9 @@ auto="$(jq -r 'if .auto == false then "false" else "true" end' <<<"$cfg")"
 mention="$(jq -r '.poll.mention // "@deepseek"' <<<"$cfg")"
 max_per_run="$(jq -r '.poll["max-per-run"] // 5' <<<"$cfg")"
 model="$(jq -r '.poll.model // "deepseek-v4-flash"' <<<"$cfg")"
-exclude="$(jq -r '.poll["exclude-patterns"] // "pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**"' <<<"$cfg")"
+# Empty by default on purpose: a non-empty exclude list sends the diff through awk inside a
+# Nushell `try` block, which deadlocks on diffs over ~64 KB (see deepseek-review.yml).
+exclude="$(jq -r '.poll["exclude-patterns"] // ""' <<<"$cfg")"
 mapfile -t repos < <(jq -r '.poll.repos // [] | .[]' <<<"$cfg")
 
 echo "central config: enabled=$enabled auto=$auto mention='$mention' max-per-run=$max_per_run repos=${#repos[@]}"
