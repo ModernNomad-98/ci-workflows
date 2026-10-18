@@ -18,8 +18,14 @@
 # PER-REPO SWITCHES live in the caller: disable the "DeepSeek Code Review" workflow in that repo,
 # or set the DEEPSEEK_REVIEW_ENABLED repository variable to false.
 #
-# Action pinned by commit SHA for supply-chain safety:
-#   hustcer/deepseek-review v1.21 = eccde2e9781008d795e366b951e313e37af88dd5
+# REVIEW TOOL (DeepSeek_Sherlock): vendored in tools/deepseek-review/ of THIS repository
+# (hustcer/deepseek-review v1.21 @ eccde2e, MIT, patches in tools/deepseek-review/PATCHES.md).
+# The review job checks it out at the literal SHA in SHERLOCK_TOOL_SHA below — pinned exactly like
+# an external action. (GitHub exposes no context for a reusable workflow's own commit, so the tool
+# is released in one commit and pinned here in the next; see README "Releasing a tool change".)
+#
+# Other pins: actions/checkout v7.0.1 = 3d3c42e5aac5ba805825da76410c181273ba90b1,
+#             hustcer/setup-nu v3.25  = ccd5bb5426b05a32009c2ba967946231f3919c97 (Nushell 0.114.1).
 name: DeepSeek PR Review (reusable)
 
 on:
@@ -29,23 +35,22 @@ on:
         description: DeepSeek model used for the review
         type: string
         required: false
-        default: deepseek-v4-flash
+        default: deepseek-flash   # current DeepSeek id (V4.1-Flash); deepseek-v4-flash is a legacy alias
       watch-mention:
         description: Comment string that re-triggers a review (caller needs the issue_comment event)
         type: string
         required: false
         default: '@deepseek'
       exclude-patterns:
-        # EMPTY ON PURPOSE. Any non-empty include/exclude pattern makes the review tool pipe the
-        # whole diff through awk inside a Nushell `try` block, which deadlocks once the diff
-        # exceeds the ~64 KB pipe buffer (reproduced with Nushell 0.114.1 and 0.116.1). The job
-        # then hangs until its timeout and no review is posted (Project-Aegis #844-#847,
-        # waypoint-pm #120). Empty patterns skip the awk filter entirely. Lockfile exclusion
-        # returns once the tool is patched (see README, "Known issue: large diffs").
-        description: Comma-separated file patterns excluded from the diff (leave empty — see comment)
+        description: Comma-separated file patterns excluded from the diff
         type: string
         required: false
-        default: ''
+        default: 'pnpm-lock.yaml,package-lock.json,*.lock,dist/**,build/**,*.min.js,*.map,vendor/**'
+      allowed-associations:
+        description: author_association values allowed to trigger a review by mention
+        type: string
+        required: false
+        default: 'OWNER,MEMBER,COLLABORATOR'
     secrets:
       CHAT_TOKEN:
         description: DeepSeek API key (per-repository secret named CHAT_TOKEN)
@@ -54,6 +59,11 @@ on:
 permissions:
   contents: read
   pull-requests: write
+
+env:
+  # The vendored tool's commit in ModernNomad-98/ci-workflows. Bump in its own commit after the
+  # tool change lands (README, "Releasing a tool change").
+  SHERLOCK_TOOL_SHA: 2a843e23209b0e170bd7b1de5cb9e2a97196a94f
 
 jobs:
   gate:
@@ -85,16 +95,68 @@ jobs:
     name: DeepSeek review
     needs: gate
     runs-on: ubuntu-latest
-    timeout-minutes: 18
+    # Thinking at max effort can take minutes on big diffs; the DeepSeek call itself is bounded at
+    # 600 s inside the tool, so a stall fails there, well before this job limit.
+    timeout-minutes: 14
     if: ${{ needs.gate.outputs.enabled == 'true' && (needs.gate.outputs.auto == 'true' || github.event_name == 'issue_comment') }}
     permissions:
       contents: read
       pull-requests: write
     steps:
-      - name: DeepSeek code review
-        uses: hustcer/deepseek-review@eccde2e9781008d795e366b951e313e37af88dd5
+      - name: Check out the vendored review tool (ci-workflows @ SHERLOCK_TOOL_SHA)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          chat-token: ${{ secrets.CHAT_TOKEN }}
-          model: ${{ inputs.model }}
-          watch-mention: ${{ inputs.watch-mention }}
-          exclude-patterns: ${{ inputs.exclude-patterns }}
+          repository: ModernNomad-98/ci-workflows
+          ref: ${{ env.SHERLOCK_TOOL_SHA }}
+          path: .sherlock
+          persist-credentials: false
+          sparse-checkout: tools/deepseek-review
+
+      - name: Set up Nushell
+        uses: hustcer/setup-nu@ccd5bb5426b05a32009c2ba967946231f3919c97 # v3.25
+        with:
+          version: 0.114.1
+
+      - name: DeepSeek_Sherlock review
+        shell: nu {0}
+        env:
+          CHAT_TOKEN: ${{ secrets.CHAT_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          REPO_INPUT: ${{ github.repository }}
+          MODEL_INPUT: ${{ inputs.model }}
+          EXCLUDE_INPUT: ${{ inputs.exclude-patterns }}
+          WATCH_MENTION: ${{ inputs.watch-mention }}
+          ALLOWED_ASSOCIATIONS_INPUT: ${{ inputs.allowed-associations }}
+          SHERLOCK_SOURCE_SHA: ${{ env.SHERLOCK_TOOL_SHA }}
+          SHERLOCK_LOG_REASONING: 'true'   # job logs live in the caller repo, same visibility as the PR
+          TOOL_DIR: ${{ github.workspace }}/.sherlock/tools/deepseek-review/nu
+        # Gating ported from hustcer/deepseek-review action.yaml (v1.21, lines 90-121).
+        run: |
+          let event = (open $env.GITHUB_EVENT_PATH)
+          let pr = $event.pull_request?.number? | default $event.issue?.number? | default '' | into string
+          let commentBody = $event.comment?.body? | default ''
+          if $env.GITHUB_EVENT_NAME == 'issue_comment' {
+            if ($event.issue?.pull_request? | is-empty) { print 'Not a pull request comment, skipping.'; exit 0 }
+            if ($event.sender?.type? == 'Bot') or ($event.sender?.login? | default '' | str ends-with '[bot]') {
+              print 'Comment from a bot, skipping to avoid a loop.'; exit 0
+            }
+            if ($env.WATCH_MENTION | is-empty) { print 'issue_comment fired but no watch-mention configured, exiting.'; exit 0 }
+            let allowed = $env.ALLOWED_ASSOCIATIONS_INPUT | split row ',' | str trim
+            if ($event.comment?.author_association? not-in $allowed) { print 'Comment author lacks write access, skipping.'; exit 0 }
+            let mentionPattern = ['(^|[^A-Za-z0-9_-])' ($env.WATCH_MENTION | str escape-regex) '([^A-Za-z0-9_-]|$)'] | str join
+            if not ($commentBody =~ $mentionPattern) { print 'The comment does not mention the watch-mention string, exiting.'; exit 0 }
+          }
+          if ($pr | is-empty) { print 'No pull request number in the event, exiting.'; exit 0 }
+          $env.PR_NUMBER_INPUT = $pr
+          $env.COMMENT_BODY_INPUT = $commentBody
+          # A child nu so `use` resolves the module path at parse time (as upstream does).
+          ^nu -I $env.TOOL_DIR -c '
+            use review.nu *
+            (deepseek-review $env.CHAT_TOKEN
+              --model $env.MODEL_INPUT
+              --repo $env.REPO_INPUT
+              --pr-number $env.PR_NUMBER_INPUT
+              --gh-token $env.GH_TOKEN
+              --exclude $env.EXCLUDE_INPUT
+              --comment $env.COMMENT_BODY_INPUT)
+          '
