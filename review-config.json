@@ -1,5 +1,13 @@
 {
-  "_comment": "Central switches for the DeepSeek PR review. enabled=false holds every caller; auto=false makes reviews mention-only. Flip a value and commit to main; callers that pin the reusable workflow by SHA still respect this file. A failed fetch holds reviews (fail closed).",
+  "_comment": "Central switches for the DeepSeek PR review. enabled=false holds every caller; auto=false makes reviews mention-only. Flip a value and commit to main; callers that pin the reusable workflow by SHA still respect this file. A failed fetch holds reviews (fail closed). The poll block drives deepseek-poll-review.yml: it reviews PRs in poll.repos through the GitHub API (no workflow in the target repo); enabled/auto apply to it too.",
   "enabled": true,
-  "auto": true
+  "auto": true,
+  "poll": {
+    "repos": [
+      "ModernNomad-98/opsflow"
+    ],
+    "mention": "@deepseek",
+    "max-per-run": 5,
+    "model": "deepseek-v4-flash"
+  }
 }
